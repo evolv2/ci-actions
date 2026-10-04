@@ -1,0 +1,51 @@
+name: scan-images
+
+# Scan a list of images in the registry with the same Trivy as scan-sign, and
+# report per image how many CRITICAL / HIGH vulnerabilities have a fix. Used
+# before switching on the CRITICAL gate in a repo (so the gate does not stop a
+# deploy by surprise) and for periodic scans of what runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: Image references, one per line or space-separated
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+      - run: az acr login --name evaplatform
+      - name: Trivy
+        env:
+          IMAGES: ${{ inputs.images }}
+        run: |
+          set -euo pipefail
+          TRIVY=0.75.0
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/trivy_${TRIVY}_Linux-64bit.tar.gz"
+          curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/trivy_${TRIVY}_checksums.txt"
+          grep " trivy_${TRIVY}_Linux-64bit.tar.gz$" "trivy_${TRIVY}_checksums.txt" | sha256sum -c -
+          tar -xzf "trivy_${TRIVY}_Linux-64bit.tar.gz" trivy
+          {
+            echo "| image | critical (fixable) | high (fixable) |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for img in $IMAGES; do
+            if ./trivy image --quiet --ignore-unfixed --severity HIGH,CRITICAL --format json -o r.json "$img" 2>/dev/null; then
+              c=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' r.json)
+              h=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' r.json)
+              crit=$(jq -r '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL") | "\(.PkgName) \(.InstalledVersion)->\(.FixedVersion) \(.VulnerabilityID)"] | unique | join("; ")' r.json)
+            else
+              c="scan failed"; h=""; crit=""
+            fi
+            echo "| \`${img#evaplatform.azurecr.io/}\` | ${c} ${crit:+($crit)} | ${h} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "RESULT ${img} critical=${c} high=${h} ${crit}"
+          done
