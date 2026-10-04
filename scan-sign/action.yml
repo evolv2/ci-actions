@@ -1,0 +1,116 @@
+name: Scan and sign a pushed image
+description: >-
+  Resolve the digest of an image pushed to ACR, scan it with Trivy (fail on a
+  CRITICAL vulnerability that has a fix), and sign it by digest with cosign.
+  Run it right after the push, with az and docker already logged in to the
+  registry (`az acr login`), as every evolv2 build job does.
+
+inputs:
+  image:
+    description: Repository in the registry, e.g. evaplatform.azurecr.io/eva-server
+    required: true
+  tag:
+    description: The pinned tag that was just pushed (not dev/latest)
+    required: true
+  registry:
+    description: ACR name, used to resolve the digest
+    default: evaplatform
+  cosign-key:
+    description: cosign private key (secrets.COSIGN_PRIVATE_KEY). Empty = scan only.
+    default: ""
+  cosign-password:
+    description: password of the cosign key (secrets.COSIGN_PASSWORD)
+    default: ""
+  fail-on:
+    description: Trivy severities that fail the build when a fix exists
+    default: CRITICAL
+
+outputs:
+  digest:
+    description: sha256 digest of the image
+    value: ${{ steps.digest.outputs.digest }}
+  ref:
+    description: image@digest
+    value: ${{ steps.digest.outputs.ref }}
+
+runs:
+  using: composite
+  steps:
+    # The digest ACR indexes, not the one buildx prints: the two differ for
+    # buildx pushes, and pinning on the buildx one gave ImagePullBackOff
+    # (eva-server build-backup-image.yml). Sign and scan exactly what runs.
+    - id: digest
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        TAG: ${{ inputs.tag }}
+        REGISTRY: ${{ inputs.registry }}
+      run: |
+        set -euo pipefail
+        repo="${IMAGE#*/}"
+        digest=$(az acr repository show -n "$REGISTRY" --image "${repo}:${TAG}" --query digest -o tsv)
+        if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo "::error::No digest for ${IMAGE}:${TAG} (got '${digest}')"
+          exit 1
+        fi
+        echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+        echo "ref=${IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+        echo "::notice::${IMAGE}:${TAG} = ${digest}"
+
+    # Official releases, checksum-verified: the self-hosted runners have no
+    # tools preinstalled, and an unverified download would be the weak link of
+    # a supply-chain check.
+    - id: tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        bin="${RUNNER_TEMP}/scan-sign-bin"; mkdir -p "$bin"; cd "$bin"
+        TRIVY=0.75.0
+        curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/trivy_${TRIVY}_Linux-64bit.tar.gz"
+        curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/trivy_${TRIVY}_checksums.txt"
+        grep " trivy_${TRIVY}_Linux-64bit.tar.gz$" "trivy_${TRIVY}_checksums.txt" | sha256sum -c -
+        tar -xzf "trivy_${TRIVY}_Linux-64bit.tar.gz" trivy
+        COSIGN=3.1.3
+        curl -fsSLO "https://github.com/sigstore/cosign/releases/download/v${COSIGN}/cosign-linux-amd64"
+        curl -fsSLO "https://github.com/sigstore/cosign/releases/download/v${COSIGN}/cosign_checksums.txt"
+        grep " cosign-linux-amd64$" cosign_checksums.txt | sha256sum -c -
+        mv cosign-linux-amd64 cosign && chmod +x cosign trivy
+        echo "$bin" >> "$GITHUB_PATH"
+
+    - id: scan
+      shell: bash
+      env:
+        REF: ${{ steps.digest.outputs.ref }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+        # Report everything HIGH and up in the job summary...
+        trivy image --quiet --ignore-unfixed --severity HIGH,CRITICAL --format table "$REF" \
+          > "${RUNNER_TEMP}/trivy.txt" || true
+        {
+          echo "### Trivy: ${REF}"
+          echo '```'
+          cat "${RUNNER_TEMP}/trivy.txt"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        # ...and fail only on the severities that must not ship.
+        trivy image --quiet --ignore-unfixed --severity "$FAIL_ON" --exit-code 1 --format table "$REF"
+
+    # Signed by digest, without the public transparency log: the registry is
+    # private, and a public log would list our repositories and digests.
+    - id: sign
+      if: inputs.cosign-key != ''
+      shell: bash
+      env:
+        REF: ${{ steps.digest.outputs.ref }}
+        COSIGN_PRIVATE_KEY: ${{ inputs.cosign-key }}
+        COSIGN_PASSWORD: ${{ inputs.cosign-password }}
+        GIT_SHA: ${{ github.sha }}
+        GIT_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
+          --use-signing-config=false --tlog-upload=false \
+          -a "repo=${GIT_REPO}" -a "commit=${GIT_SHA}" \
+          "$REF"
+        echo "::notice::signed ${REF}"
