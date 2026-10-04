@@ -66,6 +66,13 @@ jobs:
           set -euo pipefail
           cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true "$REF" > /dev/null
           echo "::notice::signed image verifies"
+          # The signature must be a TAG (sha256-<digest>.sig): acr-retention in
+          # eva-server purges untagged manifests after 2 days, which would
+          # silently delete signatures stored as untagged OCI referrers.
+          sigtag="sha256-${REF##*sha256:}.sig"
+          tags=$(az acr repository show-tags -n evaplatform --repository ci-actions-selftest -o tsv)
+          echo "$tags" | grep -qx "$sigtag" || { echo "::error::signature is not stored as tag $sigtag (tags: $tags)"; exit 1; }
+          echo "::notice::signature stored as tag $sigtag"
           docker build -f Dockerfile.selftest -t "$IMAGE:unsigned-$TAG" --label unsigned=1 .
           docker push "$IMAGE:unsigned-$TAG"
           if cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true "$IMAGE:unsigned-$TAG" > /dev/null 2>&1; then
