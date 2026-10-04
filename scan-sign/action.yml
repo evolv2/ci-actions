@@ -98,6 +98,9 @@ runs:
 
     # Signed by digest, without the public transparency log: the registry is
     # private, and a public log would list our repositories and digests.
+    # Stored as a sha256-<digest>.sig TAG (legacy mode): cosign 3 otherwise
+    # writes an untagged OCI referrer, which eva-server's acr-retention purges
+    # after 2 days -- the image would lose its signature without a trace.
     - id: sign
       if: inputs.cosign-key != ''
       shell: bash
@@ -111,6 +114,7 @@ runs:
         set -euo pipefail
         cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
           --use-signing-config=false --tlog-upload=false \
+          --registry-referrers-mode=legacy \
           -a "repo=${GIT_REPO}" -a "commit=${GIT_SHA}" \
           "$REF"
         echo "::notice::signed ${REF}"
