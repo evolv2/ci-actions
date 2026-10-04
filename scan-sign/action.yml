@@ -24,6 +24,12 @@ inputs:
   fail-on:
     description: Trivy severities that fail the build when a fix exists
     default: CRITICAL
+  enforce:
+    description: >-
+      "true" fails the build on fail-on findings; "false" only reports them
+      (job summary + warning). Use "false" while a repo still has findings
+      from before the gate existed, then switch to "true".
+    default: "true"
 
 outputs:
   digest:
@@ -82,6 +88,7 @@ runs:
       env:
         REF: ${{ steps.digest.outputs.ref }}
         FAIL_ON: ${{ inputs.fail-on }}
+        ENFORCE: ${{ inputs.enforce }}
       run: |
         set -euo pipefail
         # Report everything HIGH and up in the job summary...
@@ -94,7 +101,13 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
         # ...and fail only on the severities that must not ship.
-        trivy image --quiet --ignore-unfixed --severity "$FAIL_ON" --exit-code 1 --format table "$REF"
+        if ! trivy image --quiet --ignore-unfixed --severity "$FAIL_ON" --exit-code 1 --format table "$REF"; then
+          if [ "$ENFORCE" = "true" ]; then
+            echo "::error::${REF} has fixable ${FAIL_ON} vulnerabilities (see the job summary)"
+            exit 1
+          fi
+          echo "::warning::${REF} has fixable ${FAIL_ON} vulnerabilities; not enforced yet (enforce: false)"
+        fi
 
     # Signed by digest, without the public transparency log: the registry is
     # private, and a public log would list our repositories and digests.
