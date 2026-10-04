@@ -64,7 +64,7 @@ jobs:
           REF: ${{ steps.scansign.outputs.ref }}
         run: |
           set -euo pipefail
-          cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true --registry-referrers-mode=legacy "$REF" > /dev/null
+          cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true "$REF" > /dev/null
           echo "::notice::signed image verifies"
           # The signature must be a TAG (sha256-<digest>.sig): acr-retention in
           # eva-server purges untagged manifests after 2 days, which would
@@ -75,7 +75,7 @@ jobs:
           echo "::notice::signature stored as tag $sigtag"
           docker build -f Dockerfile.selftest -t "$IMAGE:unsigned-$TAG" --label unsigned=1 .
           docker push "$IMAGE:unsigned-$TAG"
-          if cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true --registry-referrers-mode=legacy "$IMAGE:unsigned-$TAG" > /dev/null 2>&1; then
+          if cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true "$IMAGE:unsigned-$TAG" > /dev/null 2>&1; then
             echo "::error::an unsigned image verified"; exit 1
           fi
           echo "::notice::unsigned image is refused"
