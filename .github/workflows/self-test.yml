@@ -59,6 +59,27 @@ jobs:
           cosign-key: ${{ steps.key.outputs.key }}
           cosign-password: ${{ steps.key.outputs.password }}
 
+      # digest-source registry (used by evolv2-apps, which has no az) must
+      # resolve the same digest as the az path, or apps would sign something
+      # other than what runs. Scan only: no key passed.
+      - id: scanregistry
+        uses: ./scan-sign
+        with:
+          image: ${{ env.IMAGE }}
+          tag: ${{ env.TAG }}
+          digest-source: registry
+
+      - name: Both digest sources agree
+        env:
+          ACR_DIGEST: ${{ steps.scansign.outputs.digest }}
+          REGISTRY_DIGEST: ${{ steps.scanregistry.outputs.digest }}
+        run: |
+          if [ "$ACR_DIGEST" != "$REGISTRY_DIGEST" ]; then
+            echo "::error::digest-source registry gave ${REGISTRY_DIGEST}, acr gave ${ACR_DIGEST}"
+            exit 1
+          fi
+          echo "::notice::both digest sources: ${ACR_DIGEST}"
+
       - name: Verify the signature, and that an unsigned image fails
         env:
           REF: ${{ steps.scansign.outputs.ref }}
