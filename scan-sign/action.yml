@@ -2,8 +2,10 @@ name: Scan and sign a pushed image
 description: >-
   Resolve the digest of an image pushed to ACR, scan it with Trivy (fail on a
   CRITICAL vulnerability that has a fix), and sign it by digest with cosign.
-  Run it right after the push, with az and docker already logged in to the
-  registry (`az acr login`), as every evolv2 build job does.
+  Run it right after the push, with docker logged in to the registry: via
+  `az acr login` in the evolv2 platform repos (digest-source acr), or via
+  `docker login` with a repository-scoped ACR token in evolv2-apps
+  (digest-source registry). Trivy and cosign read docker's credentials.
 
 inputs:
   image:
@@ -13,8 +15,17 @@ inputs:
     description: The pinned tag that was just pushed (not dev/latest)
     required: true
   registry:
-    description: ACR name, used to resolve the digest
+    description: ACR name, used to resolve the digest (digest-source acr)
     default: evaplatform
+  digest-source:
+    description: >-
+      How to resolve the pushed digest. "acr" (default): `az acr repository
+      show`, needs `az login`, as the evolv2 platform repos do. "registry":
+      ask the registry itself with `docker buildx imagetools inspect`, needs
+      only `docker login` -- for evolv2-apps, whose builds log in with a
+      repository-scoped ACR token and have no Azure identity. Both return the
+      manifest digest the registry stores for the tag.
+    default: acr
   cosign-key:
     description: cosign private key (secrets.COSIGN_PRIVATE_KEY). Empty = scan only.
     default: ""
@@ -51,10 +62,22 @@ runs:
         IMAGE: ${{ inputs.image }}
         TAG: ${{ inputs.tag }}
         REGISTRY: ${{ inputs.registry }}
+        DIGEST_SOURCE: ${{ inputs.digest-source }}
       run: |
         set -euo pipefail
         repo="${IMAGE#*/}"
-        digest=$(az acr repository show -n "$REGISTRY" --image "${repo}:${TAG}" --query digest -o tsv)
+        case "$DIGEST_SOURCE" in
+          acr)
+            digest=$(az acr repository show -n "$REGISTRY" --image "${repo}:${TAG}" --query digest -o tsv) ;;
+          registry)
+            # The descriptor the registry returns for the tag: for a buildx
+            # push with attestations that is the index digest, exactly what
+            # `az acr repository show` reports and what a pod pulls.
+            digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{json .Manifest}}' | jq -r '.digest') ;;
+          *)
+            echo "::error::digest-source must be 'acr' or 'registry' (got '${DIGEST_SOURCE}')"
+            exit 1 ;;
+        esac
         if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
           echo "::error::No digest for ${IMAGE}:${TAG} (got '${digest}')"
           exit 1
