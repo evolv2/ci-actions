@@ -19,10 +19,18 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: azure/login@v2
-        with:
-          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
-      - run: az acr login --name evaplatform
+      # Public repository, so no Azure identity: a pull-only ACR token
+      # (scope map _repositories_pull) is enough to scan.
+      - name: Log in to the registry with the scan token
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_SCAN_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_SCAN_PASSWORD }}
+        run: |
+          if [ -z "$ACR_USERNAME" ] || [ -z "$ACR_PASSWORD" ]; then
+            echo "::error::ACR_SCAN_USERNAME / ACR_SCAN_PASSWORD are not set for this repository."
+            exit 1
+          fi
+          printf '%s' "$ACR_PASSWORD" | docker login evaplatform.azurecr.io -u "$ACR_USERNAME" --password-stdin
       - name: Trivy
         env:
           IMAGES: ${{ inputs.images }}

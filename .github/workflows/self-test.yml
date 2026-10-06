@@ -4,6 +4,12 @@ name: self-test
 # a tiny image is pushed, scanned, signed with a key that exists only in this
 # run, verified with its public key, and an unsigned image is shown to fail
 # verification. The test repository is removed afterwards.
+#
+# This repository is public, so it holds no Azure identity: it logs in with an
+# ACR token that can only touch apps/ci-actions-selftest (scope map
+# ci-selftest: content read/write/delete, metadata read). That is the same
+# route the app repos in evolv2-apps take, so this test covers what they run:
+# docker login + digest-source registry.
 
 on:
   push:
@@ -17,16 +23,23 @@ jobs:
   self-test:
     runs-on: ubuntu-latest
     env:
-      IMAGE: evaplatform.azurecr.io/ci-actions-selftest
+      REGISTRY: evaplatform.azurecr.io
+      REPOSITORY: apps/ci-actions-selftest
+      IMAGE: evaplatform.azurecr.io/apps/ci-actions-selftest
       TAG: run-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: azure/login@v2
-        with:
-          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
-
-      - run: az acr login --name evaplatform
+      - name: Log in to the registry with the self-test token
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_SELFTEST_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_SELFTEST_PASSWORD }}
+        run: |
+          if [ -z "$ACR_USERNAME" ] || [ -z "$ACR_PASSWORD" ]; then
+            echo "::error::ACR_SELFTEST_USERNAME / ACR_SELFTEST_PASSWORD are not set for this repository."
+            exit 1
+          fi
+          printf '%s' "$ACR_PASSWORD" | docker login "$REGISTRY" -u "$ACR_USERNAME" --password-stdin
 
       - name: Build and push a tiny image
         run: |
@@ -51,34 +64,18 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           cp selftest.pub "$RUNNER_TEMP/selftest.pub"
 
+      # digest-source registry: no az here. That both sources resolve the same
+      # digest was proven while this repository still had az (run on the
+      # branch of #1); the platform repos keep exercising the acr source in
+      # their own builds.
       - id: scansign
         uses: ./scan-sign
         with:
           image: ${{ env.IMAGE }}
           tag: ${{ env.TAG }}
+          digest-source: registry
           cosign-key: ${{ steps.key.outputs.key }}
           cosign-password: ${{ steps.key.outputs.password }}
-
-      # digest-source registry (used by evolv2-apps, which has no az) must
-      # resolve the same digest as the az path, or apps would sign something
-      # other than what runs. Scan only: no key passed.
-      - id: scanregistry
-        uses: ./scan-sign
-        with:
-          image: ${{ env.IMAGE }}
-          tag: ${{ env.TAG }}
-          digest-source: registry
-
-      - name: Both digest sources agree
-        env:
-          ACR_DIGEST: ${{ steps.scansign.outputs.digest }}
-          REGISTRY_DIGEST: ${{ steps.scanregistry.outputs.digest }}
-        run: |
-          if [ "$ACR_DIGEST" != "$REGISTRY_DIGEST" ]; then
-            echo "::error::digest-source registry gave ${REGISTRY_DIGEST}, acr gave ${ACR_DIGEST}"
-            exit 1
-          fi
-          echo "::notice::both digest sources: ${ACR_DIGEST}"
 
       - name: Verify the signature, and that an unsigned image fails
         env:
@@ -91,8 +88,10 @@ jobs:
           # eva-server purges untagged manifests after 2 days, which would
           # silently delete signatures stored as untagged OCI referrers.
           sigtag="sha256-${REF##*sha256:}.sig"
-          tags=$(az acr repository show-tags -n evaplatform --repository ci-actions-selftest -o tsv)
-          echo "$tags" | grep -qx "$sigtag" || { echo "::error::signature is not stored as tag $sigtag (tags: $tags)"; exit 1; }
+          if ! docker buildx imagetools inspect "$IMAGE:$sigtag" > /dev/null 2>&1; then
+            echo "::error::signature is not stored as tag $sigtag"
+            exit 1
+          fi
           echo "::notice::signature stored as tag $sigtag"
           docker build -f Dockerfile.selftest -t "$IMAGE:unsigned-$TAG" --label unsigned=1 .
           docker push "$IMAGE:unsigned-$TAG"
@@ -101,6 +100,23 @@ jobs:
           fi
           echo "::notice::unsigned image is refused"
 
+      # The token must NOT reach beyond its own repository: a push to a
+      # platform repository has to be denied. This is the property the per-app
+      # tokens in evolv2-apps rely on.
+      - name: The token cannot push outside its own repository
+        run: |
+          docker tag "$IMAGE:$TAG" "$REGISTRY/eva-server:selftest-must-fail-$TAG"
+          if docker push "$REGISTRY/eva-server:selftest-must-fail-$TAG" > /dev/null 2>&1; then
+            echo "::error::the self-test token pushed to eva-server"; exit 1
+          fi
+          echo "::notice::push outside the token's repository is denied"
+
       - name: Remove the test repository
         if: always()
-        run: az acr repository delete -n evaplatform --repository ci-actions-selftest --yes || true
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_SELFTEST_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_SELFTEST_PASSWORD }}
+        run: |
+          az acr repository delete -n evaplatform --repository "$REPOSITORY" \
+            -u "$ACR_USERNAME" -p "$ACR_PASSWORD" --yes > /dev/null 2>&1 \
+            && echo "test repository removed" || echo "::warning::could not remove $REPOSITORY"
