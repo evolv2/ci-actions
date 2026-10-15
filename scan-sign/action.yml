@@ -122,7 +122,11 @@ runs:
         # and the run warned about CRITICAL vulnerabilities the image did not have.
         report="${RUNNER_TEMP}/trivy.json"
         rc=0
-        trivy image --quiet --timeout 30m --ignore-unfixed --severity HIGH,CRITICAL \
+        # Read the pushed image from the registry (by digest), not from the local
+        # Docker: with the local image trivy first exports all of it to /tmp, and
+        # a 15 GB CUDA image filled the runner's disk (eva-decision-model:1.0.2,
+        # "no space left on device").
+        trivy image --image-src remote --quiet --timeout 30m --ignore-unfixed --severity HIGH,CRITICAL \
           --format json --output "$report" "$REF" || rc=$?
         if [ "$rc" -ne 0 ] || [ ! -s "$report" ]; then
           if [ "$ENFORCE" = "true" ]; then
