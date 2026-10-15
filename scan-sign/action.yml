@@ -114,9 +114,26 @@ runs:
         ENFORCE: ${{ inputs.enforce }}
       run: |
         set -euo pipefail
+        # One scan, kept as JSON: the summary and the gate both read it. Large
+        # images (torch/CUDA layers of several GB) need more than trivy's default
+        # 5 minutes; a scan that errors out must not read as "has findings".
+        # Seen 15-10-2026 on eva-decision-model: trivy hit its timeout on one
+        # layer, the old `if ! trivy ... --exit-code 1` took that for a finding,
+        # and the run warned about CRITICAL vulnerabilities the image did not have.
+        report="${RUNNER_TEMP}/trivy.json"
+        rc=0
+        trivy image --quiet --timeout 30m --ignore-unfixed --severity HIGH,CRITICAL \
+          --format json --output "$report" "$REF" || rc=$?
+        if [ "$rc" -ne 0 ] || [ ! -s "$report" ]; then
+          if [ "$ENFORCE" = "true" ]; then
+            echo "::error::trivy could not scan ${REF} (exit ${rc}): a scan failure, not a finding"
+            exit 1
+          fi
+          echo "::warning::trivy could not scan ${REF} (exit ${rc}): a scan failure, not a finding; not enforced yet (enforce: false)"
+          exit 0
+        fi
         # Report everything HIGH and up in the job summary...
-        trivy image --quiet --ignore-unfixed --severity HIGH,CRITICAL --format table "$REF" \
-          > "${RUNNER_TEMP}/trivy.txt" || true
+        trivy convert --format table "$report" > "${RUNNER_TEMP}/trivy.txt" || true
         {
           echo "### Trivy: ${REF}"
           echo '```'
@@ -124,7 +141,18 @@ runs:
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
         # ...and fail only on the severities that must not ship.
-        if ! trivy image --quiet --ignore-unfixed --severity "$FAIL_ON" --exit-code 1 --format table "$REF"; then
+        blocking="$(python3 - "$report" "$FAIL_ON" <<'PY'
+        import json, sys
+        report, fail_on = sys.argv[1], {s.strip() for s in sys.argv[2].split(",") if s.strip()}
+        data = json.load(open(report, encoding="utf-8"))
+        found = sorted({f"{v['PkgName']} {v['VulnerabilityID']}"
+                        for r in data.get("Results") or [] for v in r.get("Vulnerabilities") or []
+                        if v.get("Severity") in fail_on})
+        print("\n".join(found))
+        PY
+        )"
+        if [ -n "$blocking" ]; then
+          printf '%s\n' "$blocking"
           if [ "$ENFORCE" = "true" ]; then
             echo "::error::${REF} has fixable ${FAIL_ON} vulnerabilities (see the job summary)"
             exit 1
