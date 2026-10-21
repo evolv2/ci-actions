@@ -2,6 +2,25 @@
 
 Shared GitHub Actions for evolv2 repositories.
 
+## buildkit
+
+Sets up the buildx builder for an image build:
+
+```yaml
+- id: buildx
+  uses: evolv2/ci-actions/buildkit@main
+  with:
+    name: eva-app
+    fallback-image: evaplatform.azurecr.io/mirror/moby/buildkit:buildx-stable-1
+```
+
+On the eva-ci build runners it uses the shared BuildKit daemon (eva-server
+`scripts/ci-runners/03-buildkit.yaml`). That daemon keeps its cache between
+builds and runs only while builds do. Anywhere else, or if the daemon is not
+up in time, the action creates a local docker-container builder as before.
+When `steps.buildx.outputs.remote` is `true`, leave out
+`--cache-to type=registry`: the daemon keeps the cache itself.
+
 ## scan-sign
 
 Run right after an image is pushed to ACR (with `az acr login` done):
