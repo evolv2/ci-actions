@@ -126,8 +126,10 @@ runs:
         # Docker: with the local image trivy first exports all of it to /tmp, and
         # a 15 GB CUDA image filled the runner's disk (eva-decision-model:1.0.2,
         # "no space left on device").
+        # --list-all-pkgs: the report also lists every package, so the SBOM
+        # below is converted from it instead of a second scan of the layers.
         trivy image --image-src remote --quiet --timeout 30m --ignore-unfixed --severity HIGH,CRITICAL \
-          --format json --output "$report" "$REF" || rc=$?
+          --list-all-pkgs --format json --output "$report" "$REF" || rc=$?
         if [ "$rc" -ne 0 ] || [ ! -s "$report" ]; then
           if [ "$ENFORCE" = "true" ]; then
             echo "::error::trivy could not scan ${REF} (exit ${rc}): a scan failure, not a finding"
@@ -188,3 +190,32 @@ runs:
           -a "repo=${GIT_REPO}" -a "commit=${GIT_SHA}" \
           "$REF"
         echo "::notice::signed ${REF}"
+
+    # The SBOM of this digest as an in-toto attestation, signed with the same
+    # key (`sha256-<digest>.att` TAG next to the .sig, classic format for the
+    # same reason). The agent-VM's advisory watch reads it to re-check running
+    # images against every new advisory -- for images it cannot map to one
+    # lockfile (sandbox, egress gateway, `latest` images). Converted from the
+    # scan's report (no second scan). A failure here warns and does not fail
+    # the build: the image is scanned and signed; only the re-check misses it.
+    - id: attest
+      if: inputs.cosign-key != ''
+      shell: bash
+      env:
+        REF: ${{ steps.digest.outputs.ref }}
+        COSIGN_PRIVATE_KEY: ${{ inputs.cosign-key }}
+        COSIGN_PASSWORD: ${{ inputs.cosign-password }}
+      run: |
+        set -uo pipefail
+        report="${RUNNER_TEMP}/trivy.json"
+        sbom="${RUNNER_TEMP}/sbom.cdx.json"
+        if [ ! -s "$report" ] || ! trivy convert --format cyclonedx --output "$sbom" "$report"; then
+          echo "::warning::no SBOM for ${REF}: the scan report is missing or could not be converted"
+          exit 0
+        fi
+        if cosign attest --yes --key env://COSIGN_PRIVATE_KEY --type cyclonedx --predicate "$sbom" \
+             --use-signing-config=false --tlog-upload=false --new-bundle-format=false "$REF"; then
+          echo "::notice::SBOM attested for ${REF}"
+        else
+          echo "::warning::SBOM attestation failed for ${REF}; the image is signed, the daily re-check will miss it"
+        fi
