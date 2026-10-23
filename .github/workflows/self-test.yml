@@ -93,6 +93,27 @@ jobs:
             exit 1
           fi
           echo "::notice::signature stored as tag $sigtag"
+          # The SBOM attestation: verifies with the same key, its subject is
+          # this digest, it holds CycloneDX components, and it is a TAG (.att).
+          cosign verify-attestation --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true \
+            --type cyclonedx --output-file "$RUNNER_TEMP/att.jsonl" "$REF" > /dev/null
+          python3 - "$RUNNER_TEMP/att.jsonl" "${REF##*sha256:}" <<'PY'
+          import base64, json, sys
+          env = json.loads(open(sys.argv[1]).readline())
+          st = json.loads(base64.b64decode(env["payload"]))
+          assert st["subject"][0]["digest"]["sha256"] == sys.argv[2], "attestation subject is another digest"
+          pred = st["predicate"]
+          pred = pred.get("Data", pred) if isinstance(pred, dict) else pred
+          pred = json.loads(pred) if isinstance(pred, str) else pred
+          assert pred.get("bomFormat") == "CycloneDX" and pred.get("components"), "no CycloneDX components"
+          print(f"SBOM attestation verified: {len(pred['components'])} components")
+          PY
+          atttag="sha256-${REF##*sha256:}.att"
+          if ! docker buildx imagetools inspect "$IMAGE:$atttag" > /dev/null 2>&1; then
+            echo "::error::SBOM attestation is not stored as tag $atttag"
+            exit 1
+          fi
+          echo "::notice::SBOM attestation stored as tag $atttag"
           docker build -f Dockerfile.selftest -t "$IMAGE:unsigned-$TAG" --label unsigned=1 .
           docker push "$IMAGE:unsigned-$TAG"
           if cosign verify --key "$RUNNER_TEMP/selftest.pub" --insecure-ignore-tlog=true "$IMAGE:unsigned-$TAG" > /dev/null 2>&1; then
