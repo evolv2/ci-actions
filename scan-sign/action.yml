@@ -86,25 +86,80 @@ runs:
         echo "ref=${IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
         echo "::notice::${IMAGE}:${TAG} = ${digest}"
 
-    # Official releases, checksum-verified: the self-hosted runners have no
-    # tools preinstalled, and an unverified download would be the weak link of
-    # a supply-chain check.
-    - id: tools
+    # Official releases, verified against sha256 sums pinned HERE (taken from
+    # the GitHub release API's asset digests), not against a checksums file
+    # downloaded next to the binary. The verified downloads are kept in the
+    # Actions cache, keyed on version and sum, so a build does not depend on
+    # GitHub's release CDN being up: on 08-11-2026 it answered 504 for hours
+    # and every eva-server dev build failed here. The sum is checked on every
+    # run, cache hit or not, so the cache is a copy and never a trust source.
+    # Bumping a tool = new version + its sum in `pins`; the key follows.
+    - id: pins
       shell: bash
       run: |
         set -euo pipefail
-        bin="${RUNNER_TEMP}/scan-sign-bin"; mkdir -p "$bin"; cd "$bin"
         TRIVY=0.75.0
-        curl -fsSLO --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/trivy_${TRIVY}_Linux-64bit.tar.gz"
-        curl -fsSLO --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/trivy_${TRIVY}_checksums.txt"
-        grep " trivy_${TRIVY}_Linux-64bit.tar.gz$" "trivy_${TRIVY}_checksums.txt" | sha256sum -c -
-        tar -xzf "trivy_${TRIVY}_Linux-64bit.tar.gz" trivy
+        TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
         COSIGN=3.1.3
-        curl -fsSLO --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 "https://github.com/sigstore/cosign/releases/download/v${COSIGN}/cosign-linux-amd64"
-        curl -fsSLO --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 "https://github.com/sigstore/cosign/releases/download/v${COSIGN}/cosign_checksums.txt"
-        grep " cosign-linux-amd64$" cosign_checksums.txt | sha256sum -c -
-        mv cosign-linux-amd64 cosign && chmod +x cosign trivy
+        COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+        {
+          echo "trivy=${TRIVY}"; echo "trivy-sha256=${TRIVY_SHA256}"
+          echo "cosign=${COSIGN}"; echo "cosign-sha256=${COSIGN_SHA256}"
+          echo "dir=${RUNNER_TEMP}/scan-sign-dl"
+          echo "key=scan-sign-tools-${RUNNER_OS}-${RUNNER_ARCH}-trivy${TRIVY}-${TRIVY_SHA256:0:12}-cosign${COSIGN}-${COSIGN_SHA256:0:12}"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.pins.outputs.dir }}
+        key: ${{ steps.pins.outputs.key }}
+
+    - id: tools
+      shell: bash
+      env:
+        TRIVY: ${{ steps.pins.outputs.trivy }}
+        TRIVY_SHA256: ${{ steps.pins.outputs.trivy-sha256 }}
+        COSIGN: ${{ steps.pins.outputs.cosign }}
+        COSIGN_SHA256: ${{ steps.pins.outputs.cosign-sha256 }}
+        DL: ${{ steps.pins.outputs.dir }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$DL"; cd "$DL"
+        trivy_tgz="trivy_${TRIVY}_Linux-64bit.tar.gz"
+        fetch() {
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 --connect-timeout 20 -o "$2" "$1"
+        }
+        verify() {
+          echo "${TRIVY_SHA256}  ${trivy_tgz}" | sha256sum -c - &&
+          echo "${COSIGN_SHA256}  cosign-linux-amd64" | sha256sum -c -
+        }
+        downloaded=false
+        if [ "$CACHE_HIT" = "true" ] && verify; then
+          echo "::notice::trivy ${TRIVY} and cosign ${COSIGN} from the Actions cache (sha256 verified)"
+        else
+          [ "$CACHE_HIT" = "true" ] && echo "::warning::cached tools failed the sha256 check; downloading again"
+          rm -f "$trivy_tgz" cosign-linux-amd64
+          fetch "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/${trivy_tgz}" "$trivy_tgz"
+          fetch "https://github.com/sigstore/cosign/releases/download/v${COSIGN}/cosign-linux-amd64" cosign-linux-amd64
+          verify
+          downloaded=true
+        fi
+        echo "downloaded=${downloaded}" >> "$GITHUB_OUTPUT"
+        bin="${RUNNER_TEMP}/scan-sign-bin"; mkdir -p "$bin"
+        tar -xzf "$trivy_tgz" -C "$bin" trivy
+        install -m 0755 cosign-linux-amd64 "$bin/cosign"
         echo "$bin" >> "$GITHUB_PATH"
+
+    # Saved right away rather than in a post step, so a scan that fails later
+    # (a finding) still leaves the verified tools for the next run.
+    - if: steps.tools.outputs.downloaded == 'true'
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: ${{ steps.pins.outputs.dir }}
+        key: ${{ steps.pins.outputs.key }}
 
     - id: scan
       shell: bash
