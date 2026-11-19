@@ -110,7 +110,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - id: cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ steps.pins.outputs.dir }}
         key: ${{ steps.pins.outputs.key }}
@@ -177,7 +177,7 @@ runs:
     # Saved right away rather than in a post step, so a scan that fails later
     # (a finding) still leaves the verified tools for the next run.
     - if: steps.tools.outputs.downloaded == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       continue-on-error: true
       with:
         path: ${{ steps.pins.outputs.dir }}
