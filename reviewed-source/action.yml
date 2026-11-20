@@ -20,7 +20,8 @@ description: >-
     true) or a release `X.Y.Z` whose tag is on `main`. A hotfix, fix or
     feature build tag is never accepted.
 
-  Needs a checkout with full history and tags (`fetch-depth: 0`).
+  Works on a shallow checkout (it fetches the history it needs), but a
+  checkout with `fetch-depth: 0` saves that fetch.
 
   Why (INC-00849, 20-11-2026): in eva-app a push to `hotfix/*` rolled out to
   evolv2 without review. With that closed, a manual run with a typed version
@@ -50,6 +51,10 @@ runs:
         TARGET: ${{ github.event.release.target_commitish }}
       run: |
         set -euo pipefail
+        # A shallow checkout cannot answer "is this commit on main".
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          git fetch --quiet --unshallow origin
+        fi
         git fetch --quiet --tags --force origin '+refs/heads/main:refs/remotes/origin/main'
         fail() { echo "::error::$*"; exit 1; }
         VERSION="${INPUT_VERSION#v}"

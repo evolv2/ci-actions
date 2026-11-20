@@ -25,8 +25,8 @@ When `steps.buildx.outputs.remote` is `true`, leave out
 
 Fails the job when a release or a manual run would build, tag or deploy code
 that did not go through a reviewed PR (eva-server
-`docs/platform/release-and-deploy.md`, "Only reviewed code deploys"). Needs a
-checkout with `fetch-depth: 0`.
+`docs/platform/release-and-deploy.md`, "Only reviewed code deploys"). On a
+shallow checkout it fetches the history it needs.
 
 ```yaml
 # On a release event, before the build: the release commit must be on main
