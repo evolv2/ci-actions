@@ -7,10 +7,11 @@ description: >-
 
   Three checks, picked by `mode`:
 
-  - `release` (a `release` event): the release commit must be on `main`, or,
-    for a maintenance-line release whose target is `release/X.Y.x`, on that
-    branch. A release created by hand on any other commit is refused before
-    anything is built, tagged `latest` or deployed.
+  - `release` (a `release` event): the release commit must be on `main`. A
+    release created by hand on any other commit is refused before anything is
+    built, tagged `latest` or deployed. That includes, for now, a
+    maintenance-line release on `release/X.Y.x`: that branch pattern requires
+    no PR yet (INC-00878).
   - `build` (a manual run that sets the image tag itself): the version must be
     a release tag `vX.Y.Z` on exactly the commit being built. Otherwise a
     manual run could push another branch's code under an existing release
@@ -48,7 +49,6 @@ runs:
         MODE: ${{ inputs.mode }}
         INPUT_VERSION: ${{ inputs.version }}
         ALLOW_DEV: ${{ inputs.allow-dev }}
-        TARGET: ${{ github.event.release.target_commitish }}
       run: |
         set -euo pipefail
         # A shallow checkout cannot answer "is this commit on main".
@@ -66,15 +66,13 @@ runs:
 
         case "$MODE" in
           release)
-            BRANCH=main
-            case "$TARGET" in
-              release/*) BRANCH="$TARGET"
-                git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
-                  || fail "Release target $BRANCH does not exist on origin." ;;
-            esac
-            git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BRANCH" \
-              || fail "Release commit $GITHUB_SHA is not on $BRANCH. Only a release of reviewed code (main, or a maintenance line) may be built and deployed."
-            echo "Release commit $GITHUB_SHA is on $BRANCH." ;;
+            # Only main. A maintenance line (release/X.Y.x) is not accepted
+            # while no rule requires a PR on release/*: anyone with write
+            # access could push their own release/9.9.x and release it
+            # (INC-00878). Add the line back here once that rule exists.
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || fail "Release commit $GITHUB_SHA is not on main. Only a release of reviewed code may be built and deployed (a release/X.Y.x line is refused until release/* requires a PR, INC-00878)."
+            echo "Release commit $GITHUB_SHA is on main." ;;
           build)
             [ -n "$VERSION" ] || fail "mode build needs a version."
             [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \

@@ -29,16 +29,17 @@ that did not go through a reviewed PR (eva-server
 shallow checkout it fetches the history it needs.
 
 ```yaml
-# On a release event, before the build: the release commit must be on main
-# (or on its release/X.Y.x line).
-- uses: evolv2/ci-actions/reviewed-source@main
+# On a release event, before the build: the release commit must be on main.
+# Pin the action by full commit SHA: this repository is public and main
+# is not protected.
+- uses: evolv2/ci-actions/reviewed-source@<full-commit-sha>
   if: github.event_name == 'release'
   with:
     mode: release
 
 # A manual run that tags the image with a typed version: only a release tag
 # on exactly the commit being built.
-- uses: evolv2/ci-actions/reviewed-source@main
+- uses: evolv2/ci-actions/reviewed-source@<full-commit-sha>
   if: github.event_name == 'workflow_dispatch' && inputs.version != ''
   with:
     mode: build
@@ -46,7 +47,7 @@ shallow checkout it fetches the history it needs.
 
 # A manual run that deploys an existing tag: a release on main, or a dev build
 # when the target is a dev namespace.
-- uses: evolv2/ci-actions/reviewed-source@main
+- uses: evolv2/ci-actions/reviewed-source@<full-commit-sha>
   with:
     mode: deploy
     version: ${{ steps.target.outputs.version }}
