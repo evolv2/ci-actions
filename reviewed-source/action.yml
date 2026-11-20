@@ -1,0 +1,93 @@
+name: Refuse code that did not go through a reviewed PR
+description: >-
+  Fails the job when a release or a manual run would build, tag or deploy code
+  that never went through a reviewed PR. The rule (eva-server
+  docs/platform/release-and-deploy.md, "Only reviewed code deploys"): an
+  environment only gets code from `dev`, `main` or a release made from them.
+
+  Three checks, picked by `mode`:
+
+  - `release` (a `release` event): the release commit must be on `main`, or,
+    for a maintenance-line release whose target is `release/X.Y.x`, on that
+    branch. A release created by hand on any other commit is refused before
+    anything is built, tagged `latest` or deployed.
+  - `build` (a manual run that sets the image tag itself): the version must be
+    a release tag `vX.Y.Z` on exactly the commit being built. Otherwise a
+    manual run could push another branch's code under an existing release
+    tag in the registry.
+  - `deploy` (a manual run that deploys an existing image tag): the version
+    must be a `dev` build tag (`X.Y.Z[-N-gSHA]-dev`, only when `allow-dev` is
+    true) or a release `X.Y.Z` whose tag is on `main`. A hotfix, fix or
+    feature build tag is never accepted.
+
+  Needs a checkout with full history and tags (`fetch-depth: 0`).
+
+  Why (INC-00849, 20-11-2026): in eva-app a push to `hotfix/*` rolled out to
+  evolv2 without review. With that closed, a manual run with a typed version
+  and a hand-made GitHub release were the remaining ways to put unreviewed
+  code in an environment.
+
+inputs:
+  mode:
+    description: "`release`, `build` or `deploy`."
+    required: true
+  version:
+    description: The version or image tag (with or without a leading `v`). Required for `build` and `deploy`.
+    default: ""
+  allow-dev:
+    description: "`deploy` only: accept a dev build tag. False for production namespaces."
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Check that the source was reviewed
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        INPUT_VERSION: ${{ inputs.version }}
+        ALLOW_DEV: ${{ inputs.allow-dev }}
+        TARGET: ${{ github.event.release.target_commitish }}
+      run: |
+        set -euo pipefail
+        git fetch --quiet --tags --force origin '+refs/heads/main:refs/remotes/origin/main'
+        fail() { echo "::error::$*"; exit 1; }
+        VERSION="${INPUT_VERSION#v}"
+        is_release_on_main() {
+          [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+          git rev-parse -q --verify "refs/tags/v$1^{commit}" >/dev/null || return 1
+          git merge-base --is-ancestor "v$1^{commit}" origin/main
+        }
+
+        case "$MODE" in
+          release)
+            BRANCH=main
+            case "$TARGET" in
+              release/*) BRANCH="$TARGET"
+                git fetch --quiet origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+                  || fail "Release target $BRANCH does not exist on origin." ;;
+            esac
+            git merge-base --is-ancestor "$GITHUB_SHA" "origin/$BRANCH" \
+              || fail "Release commit $GITHUB_SHA is not on $BRANCH. Only a release of reviewed code (main, or a maintenance line) may be built and deployed."
+            echo "Release commit $GITHUB_SHA is on $BRANCH." ;;
+          build)
+            [ -n "$VERSION" ] || fail "mode build needs a version."
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+              || fail "Version '$VERSION' is not a release (X.Y.Z). A manual run may only rebuild a release, under its own tag."
+            TAG_SHA=$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}") \
+              || fail "Tag v$VERSION does not exist."
+            [ "$TAG_SHA" = "$GITHUB_SHA" ] \
+              || fail "Tag v$VERSION is $TAG_SHA, this run builds $GITHUB_SHA. Run it on the commit the tag points at."
+            is_release_on_main "$VERSION" || fail "Tag v$VERSION is not on main."
+            echo "Rebuilding release $VERSION from its own commit." ;;
+          deploy)
+            [ -n "$VERSION" ] || fail "mode deploy needs a version."
+            if [ "$ALLOW_DEV" = "true" ] && [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+-g[0-9a-f]+)?-dev$ ]]; then
+              echo "Dev build $VERSION."
+            elif is_release_on_main "$VERSION"; then
+              echo "Release $VERSION (tag on main)."
+            else
+              fail "Version '$VERSION' is not a release on main$( [ "$ALLOW_DEV" = "true" ] && echo ' or a dev build' ). A hotfix, fix or feature build is never deployed by hand."
+            fi ;;
+          *) fail "Unknown mode '$MODE' (release, build or deploy)." ;;
+        esac
