@@ -21,6 +21,39 @@ up in time, the action creates a local docker-container builder as before.
 When `steps.buildx.outputs.remote` is `true`, leave out
 `--cache-to type=registry`: the daemon keeps the cache itself.
 
+## reviewed-source
+
+Fails the job when a release or a manual run would build, tag or deploy code
+that did not go through a reviewed PR (eva-server
+`docs/platform/release-and-deploy.md`, "Only reviewed code deploys"). On a
+shallow checkout it fetches the history it needs.
+
+```yaml
+# On a release event, before the build: the release commit must be on main.
+# Pin the action by full commit SHA: this repository is public and main
+# is not protected.
+- uses: evolv2/ci-actions/reviewed-source@<full-commit-sha>
+  if: github.event_name == 'release'
+  with:
+    mode: release
+
+# A manual run that tags the image with a typed version: only a release tag
+# on exactly the commit being built.
+- uses: evolv2/ci-actions/reviewed-source@<full-commit-sha>
+  if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+  with:
+    mode: build
+    version: ${{ inputs.version }}
+
+# A manual run that deploys an existing tag: a release on main, or a dev build
+# when the target is a dev namespace.
+- uses: evolv2/ci-actions/reviewed-source@<full-commit-sha>
+  with:
+    mode: deploy
+    version: ${{ steps.target.outputs.version }}
+    allow-dev: ${{ steps.target.outputs.namespace == 'dev' }}
+```
+
 ## scan-sign
 
 Run right after an image is pushed to ACR (with `az acr login` done):
