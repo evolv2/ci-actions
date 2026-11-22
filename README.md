@@ -73,6 +73,10 @@ signs the digest with cosign without the public transparency log. The cluster
 admits only images signed with the evolv2 key (Kyverno policy in eva-server,
 `k8s/leafcloud/kyverno/`).
 
+Both `cosign-key` and `cosign-password` are required: when either is empty the
+action fails before it scans. It runs after the caller's push, so a caller that
+must never push an unsigned image checks for the key before that push as well.
+
 `self-test.yml` proves it end to end on every push to main.
 
 ### From evolv2-apps (customer apps)
