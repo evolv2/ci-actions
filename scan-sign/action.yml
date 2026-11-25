@@ -27,10 +27,10 @@ inputs:
       manifest digest the registry stores for the tag.
     default: acr
   cosign-key:
-    description: cosign private key (secrets.COSIGN_PRIVATE_KEY). Empty = scan only.
+    description: cosign private key (secrets.COSIGN_PRIVATE_KEY). Required; empty fails the step.
     default: ""
   cosign-password:
-    description: password of the cosign key (secrets.COSIGN_PASSWORD)
+    description: password of the cosign key (secrets.COSIGN_PASSWORD). Required; empty fails the step.
     default: ""
   fail-on:
     description: Trivy severities that fail the build when a fix exists
@@ -53,6 +53,19 @@ outputs:
 runs:
   using: composite
   steps:
+    # Fail closed. `required: true` is not enforced for action inputs, and a
+    # secret the caller does not receive arrives as an empty string. Only
+    # whether the inputs are set goes into the environment, not their values.
+    - id: key
+      shell: bash
+      env:
+        HAS_KEY: ${{ inputs.cosign-key != '' && inputs.cosign-password != '' }}
+      run: |
+        if [ "$HAS_KEY" != "true" ]; then
+          echo "::error::scan-sign needs cosign-key and cosign-password; at least one is empty, so the image cannot be signed."
+          exit 1
+        fi
+
     # The digest ACR indexes, not the one buildx prints: the two differ for
     # buildx pushes, and pinning on the buildx one gave ImagePullBackOff
     # (eva-server build-backup-image.yml). Sign and scan exactly what runs.
@@ -262,7 +275,6 @@ runs:
     # days -- the image would lose its signature without a trace. The
     # self-test checks the tag exists.
     - id: sign
-      if: inputs.cosign-key != ''
       shell: bash
       env:
         REF: ${{ steps.digest.outputs.ref }}
@@ -296,7 +308,6 @@ runs:
     # scan's report (no second scan). A failure here warns and does not fail
     # the build: the image is scanned and signed; only the re-check misses it.
     - id: attest
-      if: inputs.cosign-key != ''
       shell: bash
       env:
         REF: ${{ steps.digest.outputs.ref }}
