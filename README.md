@@ -77,15 +77,27 @@ jobs:
       - uses: evolv2/ci-actions/runs-on-guard@<full-commit-sha>
 ```
 
-- A hosted label (`ubuntu-*`, `windows-*`, `macos-*`, also as `|| 'ubuntu-latest'`
-  or a matrix entry) needs `# hosted: <reason>` on that line or in the comment
-  block right above. Reasons in use: a macOS/Windows release leg (we have
-  only Linux runners), a public repository, an endpoint that refuses LeafCloud.
-  A comparison such as `vars.CI_RUNNER == 'ubuntu-latest'` is not a label.
-- In a public repository (this one) the reverse holds: an own runner is
-  refused, because anyone can open a PR there.
-- `pull_request_target` with a checkout of the PR head on an own runner is
-  refused.
+The workflows are parsed as YAML (`guard.js`, js-yaml 4.1.0 vendored in
+`vendor/`), per job; a job that `uses:` a reusable workflow is checked by that
+repository's own guard.
+
+- A hosted label (`ubuntu-*`, `windows-*`, `macos-*`, also `-arm`, `-large`,
+  `-xlarge`; in `runs-on`, as `|| 'ubuntu-latest'` or in the matrix) needs
+  `# hosted: <reason>` in the job or in the comment block above it. Reasons in
+  use: a macOS/Windows release leg (we have only Linux runners), a public
+  repository, an endpoint that refuses LeafCloud. A comparison such as
+  `vars.CI_RUNNER == 'ubuntu-latest'` is not a label.
+- In a public repository (this one) the reverse holds: an own runner
+  (`leafcloud*`, `self-hosted`, a runner `group`, a `vars.*` label) is
+  refused, reason or not, because anyone can open a PR there.
+- `pull_request_target` with a checkout or fetch of PR code (`ref` on the PR
+  head or `refs/pull/...`, `gh pr checkout`) on an own runner is refused.
+
+What it cannot see: the value of a `vars.X` (a variable may hold a hosted
+label), a label built with `format()`, reusable workflows in other
+repositories. In a public repository it is a lint, not a boundary: a fork PR
+can change the guard in the same PR. The boundary there is the runner group,
+which must not allow public repositories. Tests: `node runs-on-guard/test.js`.
 
 Why (27-11-2026): the org's Actions budget ran out and every job still on
 GitHub-hosted stopped. This repository runs the guard on itself

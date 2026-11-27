@@ -8,14 +8,19 @@ description: >-
   expression in this description would be evaluated), and for jobs
   that hold a deploy or publish credential `vars.DEPLOY_RUNNER`.
 
-  The rules (runs-on-guard/check.sh):
+  The workflows are parsed as YAML (runs-on-guard/guard.js, js-yaml 4.1.0
+  vendored), per job:
 
-  - a hosted label (ubuntu-*, windows-*, macos-*), also as a fallback or a
-    matrix entry, needs `# hosted: <reason>` on that line or the line above;
-  - in a public repository it is the other way round: a job on an own runner
-    is refused (anyone can open a PR there);
-  - `pull_request_target` with a checkout of the PR head on an own runner is
-    refused.
+  - a hosted label (ubuntu-*, windows-*, macos-*, also -arm/-large/-xlarge),
+    in runs-on, as an expression fallback or in the matrix, needs
+    `# hosted: <reason>` in the job or in the comment block above it;
+  - in a public repository a job on an own runner (leafcloud*, self-hosted,
+    a runner group, a variable label) is refused, reason or not;
+  - `pull_request_target` with a checkout or fetch of PR code on an own
+    runner is refused.
+
+  Runs on the runner's own Node, so nothing has to be installed on the
+  runner image. Tests: `node runs-on-guard/test.js`.
 
   Why (T-20261127-12, 27-11-2026): the org's Actions budget ran out, and every
   job still on GitHub-hosted stopped (admin deploys since 25-11, eva-sdk CI).
@@ -27,11 +32,5 @@ inputs:
     default: .github/workflows
 
 runs:
-  using: composite
-  steps:
-    - name: Check runs-on labels
-      shell: bash
-      env:
-        WORKFLOW_DIR: ${{ inputs.path }}
-        PUBLIC_REPO: ${{ github.event.repository.private == false }}
-      run: bash "$GITHUB_ACTION_PATH/check.sh" "$WORKFLOW_DIR" "$PUBLIC_REPO"
+  using: node24
+  main: index.js
