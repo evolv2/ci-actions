@@ -4,7 +4,8 @@ description: >-
   runner without a stated reason. Every evolv2 job runs on our own runners
   (eva-ci, labels leafcloud / leafcloud-build / leafcloud-tests /
   leafcloud-publish), chosen through a repository variable so a repo can
-  switch without a PR: `${{ vars.CI_RUNNER || 'leafcloud' }}`, and for jobs
+  switch without a PR: `vars.CI_RUNNER || 'leafcloud'` in an expression (an
+  expression in this description would be evaluated), and for jobs
   that hold a deploy or publish credential `vars.DEPLOY_RUNNER`.
 
   The rules (runs-on-guard/check.sh):
