@@ -14,8 +14,13 @@ name: PR source
 # review route as any PR into main (lesson of INC-00849).
 #
 # No checkout, no secrets, no token permissions: the job only reads the event.
-# Hosted runner on purpose: a job triggered by PR events does not belong on
-# our own (privileged) runners, even without a checkout.
+# Own runner (vars.CI_RUNNER || leafcloud), agreed with the security manager
+# 27-11-2026: the job runs this pinned file, no code from the PR, no checkout
+# and no secrets, and main does not close when the hosted Actions limit is hit.
+#
+# Whoever changes this file decides over main in zentro and zentro-field. A
+# change only counts after the ruleset's sha is updated; that update needs a
+# dm-review.
 
 on:
   pull_request:
@@ -27,7 +32,7 @@ jobs:
   pr-bron:
     # In ci-actions itself this file is only the source, not a gate.
     if: github.repository != 'evolv2/ci-actions'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'leafcloud' }}
     timeout-minutes: 2
     steps:
       - name: Head branch is dev, hotfix/* or release-please, from this repository
