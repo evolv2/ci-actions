@@ -1,0 +1,34 @@
+name: setup-gh test
+
+# Installs the pinned gh even though the hosted runner has one, and checks
+# that the one on PATH afterwards is ours and the pinned version.
+
+on:
+  pull_request:
+    paths: ["setup-gh/**", ".github/workflows/setup-gh-test.yml"]
+  push:
+    branches: [main]
+    paths: ["setup-gh/**", ".github/workflows/setup-gh-test.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  setup-gh:
+    # hosted: public repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./setup-gh
+        with:
+          force: "true"
+      - name: The pinned gh comes first on PATH
+        run: |
+          set -euo pipefail
+          where=$(command -v gh)
+          echo "gh on PATH: $where"
+          case "$where" in "$RUNNER_TEMP"/setup-gh-bin/gh) ;; *) echo "::error::not ours"; exit 1;; esac
+          gh --version | head -1 | grep -q "gh version 2.104.0 " || { echo "::error::wrong version"; exit 1; }

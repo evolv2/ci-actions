@@ -1,0 +1,82 @@
+name: Install a pinned GitHub CLI
+description: >-
+  Puts `gh` on PATH, a pinned release checked against its sha256. GitHub-hosted
+  runners have gh preinstalled; our own runners (eva-ci, the
+  ghcr.io/actions/actions-runner image) do not. A job that moves from
+  ubuntu-latest to our runners and calls `gh` adds this step first.
+
+  Same pattern as scan-sign and repo-scan: version and sum in `pins`, the
+  Actions cache is a copy and never a trust source (the sum is checked on every
+  run). Bumping = new version + its sum from the release's checksums file;
+  the supply-chain policy wants a release of at least 7 days old
+  (T-20261119-06). On a runner that already has gh (hosted) it does nothing.
+
+  Why (T-20261127-12, 27-11-2026): the org's hosted budget ran out, and the
+  release jobs of eva-cli, eva-cli-desktop and eva-dev-cli use gh.
+
+inputs:
+  force:
+    description: "Install even when gh is already on PATH (used by this repository's own test)."
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - id: pins
+      shell: bash
+      env:
+        FORCE: ${{ inputs.force }}
+      run: |
+        set -euo pipefail
+        GH=2.104.0
+        GH_SHA256=98cb101ad87dbbd3f6b2f2bfcbd43197ccd07643140121d8a9cfaa91eadbc24e
+        have=false
+        if [ "$FORCE" != "true" ] && command -v gh >/dev/null 2>&1; then have=true; fi
+        {
+          echo "have=${have}"
+          echo "gh=${GH}"; echo "gh-sha256=${GH_SHA256}"
+          echo "dir=${RUNNER_TEMP}/setup-gh-dl"
+          echo "key=setup-gh-${RUNNER_OS}-${RUNNER_ARCH}-${GH}-${GH_SHA256:0:12}"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      if: steps.pins.outputs.have != 'true'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.pins.outputs.dir }}
+        key: ${{ steps.pins.outputs.key }}
+
+    - id: install
+      if: steps.pins.outputs.have != 'true'
+      shell: bash
+      env:
+        GH: ${{ steps.pins.outputs.gh }}
+        GH_SHA256: ${{ steps.pins.outputs.gh-sha256 }}
+        DL: ${{ steps.pins.outputs.dir }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$DL"; cd "$DL"
+        tgz="gh_${GH}_linux_amd64.tar.gz"
+        verify() { echo "${GH_SHA256}  ${tgz}" | sha256sum -c - >/dev/null; }
+        downloaded=false
+        if [ "$CACHE_HIT" = "true" ] && verify; then
+          echo "::notice::gh ${GH} from the Actions cache (sha256 verified)"
+        else
+          rm -f "$tgz"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 20 \
+            -o "$tgz" "https://github.com/cli/cli/releases/download/v${GH}/${tgz}"
+          verify || { echo "::error::gh ${GH} failed the sha256 check"; exit 1; }
+          downloaded=true
+        fi
+        echo "downloaded=${downloaded}" >> "$GITHUB_OUTPUT"
+        bin="${RUNNER_TEMP}/setup-gh-bin"; mkdir -p "$bin"
+        tar -xzf "$tgz" -C "$bin" --strip-components=2 "gh_${GH}_linux_amd64/bin/gh"
+        echo "$bin" >> "$GITHUB_PATH"
+        "$bin/gh" --version | head -1
+
+    - if: steps.pins.outputs.have != 'true' && steps.install.outputs.downloaded == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.pins.outputs.dir }}
+        key: ${{ steps.pins.outputs.key }}

@@ -137,6 +137,20 @@ ID; per secret only the rule, file and line, never the value. With
 HIGH,CRITICAL) that has a fix, and on any secret. `skip-dirs` leaves out
 directories such as test fixtures with fake keys.
 
+## setup-gh
+
+Puts a pinned GitHub CLI on PATH (sha256-checked; the Actions cache is only a
+copy). Our own runners have no `gh`; a job that moves there from
+`ubuntu-latest` and calls `gh` adds this step before it. On a runner that
+already has gh it does nothing.
+
+```yaml
+- uses: evolv2/ci-actions/setup-gh@<full-commit-sha>
+```
+
+Bump: new version and its sum (from `gh_<v>_checksums.txt` of the release) in
+the `pins` step; a release of at least 7 days old.
+
 ## scan-sign
 
 Run right after an image is pushed to ACR (with `az acr login` done):
