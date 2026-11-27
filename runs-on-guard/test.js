@@ -98,6 +98,54 @@ jobs:
     steps:
       - run: gh pr checkout \${{ github.event.number }}
 `],
+  ["pull_request_target + git fetch pull/<expr>/head", false, 1, `
+on: pull_request_target
+jobs:
+  a:
+    runs-on: leafcloud
+    steps:
+      - run: git fetch origin pull/\${{ github.event.number }}/head:pr
+`],
+  ["runs-on from an input without default", false, 1, `
+on:
+  workflow_call:
+    inputs:
+      runner: {type: string}
+jobs:
+  a:
+    runs-on: \${{ inputs.runner }}
+    steps: [{run: "true"}]
+`],
+  ["runs-on from an input with a hosted default", false, 1, `
+on:
+  workflow_call:
+    inputs:
+      runner: {type: string, default: ubuntu-latest}
+jobs:
+  a:
+    runs-on: \${{ inputs.runner }}
+    steps: [{run: "true"}]
+`],
+  ["runs-on from an input with an own default: no finding", false, 0, `
+on:
+  workflow_dispatch:
+    inputs:
+      runner: {type: choice, default: leafcloud, options: [leafcloud, leafcloud-build]}
+jobs:
+  a:
+    runs-on: \${{ inputs.runner }}
+    steps: [{run: "true"}]
+`],
+  ["public: runs-on from an input with an own default", true, 1, `
+on:
+  workflow_call:
+    inputs:
+      runner: {type: string, default: leafcloud}
+jobs:
+  a:
+    runs-on: \${{ inputs.runner }}
+    steps: [{run: "true"}]
+`],
   ["pull_request_target without checkout of PR code: no finding", false, 0, `
 on: pull_request_target
 permissions: {}

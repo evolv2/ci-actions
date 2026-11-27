@@ -52,8 +52,11 @@ function strings(v, out = []) {
 
 // Classify the runner of one job: which hosted labels it can land on, and
 // whether it can land on an own runner.
-function classify(job) {
+// `inputs` maps an input name to the labels it can take (its default and,
+// for workflow_dispatch, its options), collected from the workflow's `on`.
+function classify(job, inputs = {}) {
   const hosted = new Set();
+  const unresolved = [];
   let own = false;
   const ro = job["runs-on"];
   const matrixValues = strings(job.strategy && job.strategy.matrix);
@@ -76,10 +79,36 @@ function classify(job) {
           if (OWN_LABEL.test(v.trim())) own = true;
         }
       }
+      // A label from an input: follow it to its default and options. One
+      // without a default is refused, because the caller then picks any label.
+      for (const m of e.matchAll(/inputs\.([A-Za-z0-9_-]+)/g)) {
+        const values = inputs[m[1]] || [];
+        if (!values.length) unresolved.push(m[1]);
+        for (const v of values) {
+          if (HOSTED.test(v)) hosted.add(v);
+          else own = true;
+        }
+      }
     } else if (HOSTED.test(t)) hosted.add(t);
     else own = true; // leafcloud*, self-hosted, or any label of our own
   }
-  return { hosted: [...hosted], own };
+  return { hosted: [...hosted], own, unresolved };
+}
+
+function inputLabels(on) {
+  const out = {};
+  if (!on || typeof on !== "object" || Array.isArray(on)) return out;
+  for (const trig of ["workflow_call", "workflow_dispatch"]) {
+    const ins = on[trig] && on[trig].inputs;
+    if (!ins || typeof ins !== "object") continue;
+    for (const [name, spec] of Object.entries(ins)) {
+      const vals = out[name] || [];
+      if (spec && spec.default !== undefined && spec.default !== "") vals.push(String(spec.default).trim());
+      if (spec && Array.isArray(spec.options)) spec.options.forEach((o) => vals.push(String(o).trim()));
+      out[name] = vals;
+    }
+  }
+  return out;
 }
 
 function triggers(on) {
@@ -97,7 +126,10 @@ function checksOutPrCode(job) {
       const repo = String((step.with && step.with.repository) || "");
       if (/pull_request\.head|refs\/pull\/|github\.event\.number|github\.head_ref/.test(ref + " " + repo)) return true;
     }
-    if (typeof step.run === "string" && /gh\s+pr\s+checkout|pull\/[^\s]*\/(head|merge)|refs\/pull\//.test(step.run)) return true;
+    // `pull/${{ github.event.number }}/head` holds spaces inside the
+    // expression, so the number part is either an expression or a plain word.
+    if (typeof step.run === "string" &&
+        /gh\s+pr\s+checkout|pull\/(\$\{\{[^}]*\}\}|[^\s\/]+)\/(head|merge)|refs\/pull\//.test(step.run)) return true;
   }
   return false;
 }
@@ -149,10 +181,14 @@ function check(dir, isPublic) {
     if (!doc || typeof doc !== "object" || !doc.jobs) continue;
     const prTarget = triggers(doc.on).includes("pull_request_target");
     const blocks = jobBlocks(text);
+    const inputs = inputLabels(doc.on);
     for (const [name, job] of Object.entries(doc.jobs)) {
       if (!job || typeof job !== "object" || job.uses) continue;
-      const { hosted, own } = classify(job);
+      const { hosted, own, unresolved } = classify(job, inputs);
       const reason = /#\s*hosted:\s*\S/.test(blocks[name] || "");
+      if (unresolved.length) {
+        findings.push({ file, msg: `job '${name}': runs-on from input ${unresolved.join(", ")} without a default. Give the input a default label (leafcloud, or a hosted label with '# hosted: <reason>').` });
+      }
       if (hosted.length && !reason) {
         findings.push({ file, msg: `job '${name}': GitHub-hosted label (${hosted.join(", ")}). Use \${{ vars.CI_RUNNER || 'leafcloud' }} (deploy/publish: vars.DEPLOY_RUNNER), or add '# hosted: <reason>' to the job when there is no own machine for it.` });
       }
