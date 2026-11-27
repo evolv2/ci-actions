@@ -1,0 +1,135 @@
+name: Scan the repository for vulnerable dependencies and secrets
+description: >-
+  Scans the checked-out repository with Trivy (`trivy fs`): vulnerable
+  dependencies in the lock files (npm, pip, go, ...) and secrets committed in
+  the files. Same pinned Trivy as scan-sign, runs on the caller's own runner,
+  no GitHub Advanced Security.
+
+  Findings go to the job summary. A secret is shown masked by Trivy, by rule,
+  file and line, never the value. With `enforce: true` the job fails on a
+  vulnerability of the given severities that has a fix, and on any secret.
+  Start with `enforce: false` in a repo with findings from before the scan,
+  as with scan-sign.
+
+  Why (T-20261127-12, 27-11-2026): Michael asked for the error detection and
+  security scans on our own runners too. Before this, only images were
+  scanned (scan-sign, at publish time); a PR that added a vulnerable package
+  or a committed key was not checked at all outside eva-server's CodeQL.
+
+inputs:
+  path:
+    description: Directory to scan, relative to the workspace.
+    default: "."
+  severity:
+    description: Severities that count as a finding (when a fix exists).
+    default: HIGH,CRITICAL
+  enforce:
+    description: "`true`: fail the job on a finding. `false`: report only."
+    default: "false"
+  skip-dirs:
+    description: Comma-separated directories to leave out (tests with fake keys, vendored code).
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # The same versions and sums as scan-sign: bumping Trivy means bumping it
+    # in both places.
+    - id: pins
+      shell: bash
+      run: |
+        set -euo pipefail
+        TRIVY=0.75.0
+        TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+        {
+          echo "trivy=${TRIVY}"; echo "trivy-sha256=${TRIVY_SHA256}"
+          echo "dir=${RUNNER_TEMP}/repo-scan-dl"
+          echo "key=repo-scan-trivy-${RUNNER_OS}-${RUNNER_ARCH}-${TRIVY}-${TRIVY_SHA256:0:12}"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.pins.outputs.dir }}
+        key: ${{ steps.pins.outputs.key }}
+
+    - id: tools
+      shell: bash
+      env:
+        TRIVY: ${{ steps.pins.outputs.trivy }}
+        TRIVY_SHA256: ${{ steps.pins.outputs.trivy-sha256 }}
+        DL: ${{ steps.pins.outputs.dir }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$DL"; cd "$DL"
+        tgz="trivy_${TRIVY}_Linux-64bit.tar.gz"
+        verify() { echo "${TRIVY_SHA256}  ${tgz}" | sha256sum -c - >/dev/null; }
+        downloaded=false
+        if [ "$CACHE_HIT" = "true" ] && verify; then
+          echo "::notice::trivy ${TRIVY} from the Actions cache (sha256 verified)"
+        else
+          rm -f "$tgz"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 --connect-timeout 20 \
+            -o "$tgz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY}/${tgz}"
+          verify || { echo "::error::trivy ${TRIVY} failed the sha256 check"; exit 1; }
+          downloaded=true
+        fi
+        echo "downloaded=${downloaded}" >> "$GITHUB_OUTPUT"
+        bin="${RUNNER_TEMP}/repo-scan-bin"; mkdir -p "$bin"
+        tar -xzf "$tgz" -C "$bin" trivy
+        echo "$bin" >> "$GITHUB_PATH"
+
+    - if: steps.tools.outputs.downloaded == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ steps.pins.outputs.dir }}
+        key: ${{ steps.pins.outputs.key }}
+
+    - name: trivy fs (dependencies and secrets)
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        SEVERITY: ${{ inputs.severity }}
+        ENFORCE: ${{ inputs.enforce }}
+        SKIP_DIRS: ${{ inputs.skip-dirs }}
+      run: |
+        set -uo pipefail
+        report="${RUNNER_TEMP}/repo-scan.json"
+        args=(fs --quiet --timeout 15m --scanners vuln,secret --ignore-unfixed
+              --severity "$SEVERITY" --format json --output "$report")
+        [ -n "$SKIP_DIRS" ] && args+=(--skip-dirs "$SKIP_DIRS")
+        # node_modules is what npm installed, not what the repo declares; the
+        # lock file is scanned instead.
+        args+=(--skip-dirs "**/node_modules")
+        if ! trivy "${args[@]}" "$SCAN_PATH"; then
+          echo "::error::trivy could not scan ${SCAN_PATH}: a scan failure, not a finding"
+          exit 1
+        fi
+        vulns=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$report")
+        secrets=$(jq '[.Results[]?.Secrets[]?] | length' "$report")
+        {
+          echo "### Repository scan (Trivy): ${vulns} vulnerable dependenc(ies) with a fix (${SEVERITY}), ${secrets} secret(s)"
+          if [ "$vulns" -gt 0 ]; then
+            echo
+            echo "| Severity | Package | Installed | Fixed in | ID | File |"
+            echo "|---|---|---|---|---|---|"
+            jq -r '.Results[]? | .Target as $t | .Vulnerabilities[]? |
+                   "| \(.Severity) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion) | \(.VulnerabilityID) | \($t) |"' "$report" \
+              | sort -u | head -200
+          fi
+          if [ "$secrets" -gt 0 ]; then
+            echo
+            echo "| Rule | File | Line |"
+            echo "|---|---|---|"
+            # Rule, file and line only; never the match, not even masked.
+            jq -r '.Results[]? | .Target as $t | .Secrets[]? |
+                   "| \(.RuleID) | \($t) | \(.StartLine) |"' "$report" | head -200
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "repo-scan: ${vulns} vulnerable dependencies, ${secrets} secrets (details in the job summary)"
+        rm -f "$report"
+        if [ "$ENFORCE" = "true" ] && [ $((vulns + secrets)) -gt 0 ]; then
+          echo "::error::repo-scan found ${vulns} vulnerable dependencies with a fix and ${secrets} secrets"
+          exit 1
+        fi

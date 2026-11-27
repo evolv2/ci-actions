@@ -103,6 +103,40 @@ Why (27-11-2026): the org's Actions budget ran out and every job still on
 GitHub-hosted stopped. This repository runs the guard on itself
 (`.github/workflows/runs-on-guard.yml`).
 
+## repo-scan
+
+Scans the checked-out repository with Trivy (`trivy fs`, the same pinned
+version as scan-sign): vulnerable dependencies in the lock files and secrets
+committed in the files. Runs on the caller's own runner; no GitHub Advanced
+Security.
+
+```yaml
+# .github/workflows/repo-scan.yml in a private repository
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+permissions:
+  contents: read
+jobs:
+  repo-scan:
+    runs-on: ${{ vars.CI_RUNNER || 'leafcloud' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@<full-commit-sha>
+        with:
+          persist-credentials: false
+      - uses: evolv2/ci-actions/repo-scan@<full-commit-sha>
+        with:
+          enforce: "false"   # report only until the existing findings are fixed
+```
+
+Findings go to the job summary: per vulnerability the package, versions and
+ID; per secret only the rule, file and line, never the value. With
+`enforce: "true"` the job fails on a vulnerability of `severity` (default
+HIGH,CRITICAL) that has a fix, and on any secret. `skip-dirs` leaves out
+directories such as test fixtures with fake keys.
+
 ## scan-sign
 
 Run right after an image is pushed to ACR (with `az acr login` done):
