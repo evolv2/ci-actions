@@ -1,0 +1,26 @@
+name: runs-on guard
+
+# The guard on this repository itself, from the working tree of the PR. This
+# repository is public, so its own jobs are on GitHub-hosted (free for public
+# repositories) and the guard checks the reverse: no own runner here.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  runs-on-guard:
+    # hosted: public repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Tests of the guard
+        run: node runs-on-guard/test.js
+      - uses: ./runs-on-guard

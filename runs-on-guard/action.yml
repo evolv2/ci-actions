@@ -1,0 +1,36 @@
+name: Refuse jobs on GitHub-hosted runners
+description: >-
+  Fails the job when a workflow in this repository runs on a GitHub-hosted
+  runner without a stated reason. Every evolv2 job runs on our own runners
+  (eva-ci, labels leafcloud / leafcloud-build / leafcloud-tests /
+  leafcloud-publish), chosen through a repository variable so a repo can
+  switch without a PR: `vars.CI_RUNNER || 'leafcloud'` in an expression (an
+  expression in this description would be evaluated), and for jobs
+  that hold a deploy or publish credential `vars.DEPLOY_RUNNER`.
+
+  The workflows are parsed as YAML (runs-on-guard/guard.js, js-yaml 4.1.0
+  vendored), per job:
+
+  - a hosted label (ubuntu-*, windows-*, macos-*, also -arm/-large/-xlarge),
+    in runs-on, as an expression fallback or in the matrix, needs
+    `# hosted: <reason>` in the job or in the comment block above it;
+  - in a public repository a job on an own runner (leafcloud*, self-hosted,
+    a runner group, a variable label) is refused, reason or not;
+  - `pull_request_target` with a checkout or fetch of PR code on an own
+    runner is refused.
+
+  Runs on the runner's own Node, so nothing has to be installed on the
+  runner image. Tests: `node runs-on-guard/test.js`.
+
+  Why (T-20261127-12, 27-11-2026): the org's Actions budget ran out, and every
+  job still on GitHub-hosted stopped (admin deploys since 25-11, eva-sdk CI).
+  Michael: everything on our own runners, including the security scans.
+
+inputs:
+  path:
+    description: Directory with the workflow files.
+    default: .github/workflows
+
+runs:
+  using: node24
+  main: index.js

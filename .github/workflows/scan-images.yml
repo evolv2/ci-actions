@@ -17,6 +17,8 @@ permissions:
 
 jobs:
   scan:
+    # hosted: public repo (no own runner in a public repository; hosted
+    # minutes are free for public repositories).
     runs-on: ubuntu-latest
     steps:
       # Public repository, so no Azure identity: a pull-only ACR token

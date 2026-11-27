@@ -21,6 +21,8 @@ permissions:
 
 jobs:
   self-test:
+    # hosted: public repo (no own runner in a public repository; hosted
+    # minutes are free for public repositories).
     runs-on: ubuntu-latest
     env:
       REGISTRY: evaplatform.azurecr.io
