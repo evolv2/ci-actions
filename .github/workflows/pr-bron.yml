@@ -1,0 +1,49 @@
+name: PR source
+
+# Required workflow for main in zentro and zentro-field (INC-01158, 27-11-2026).
+#
+# A repository ruleset on main ("workflows" rule) runs THIS file, pinned to a
+# commit of evolv2/ci-actions, on every PR into main. Because the file is not
+# read from the PR, a PR cannot change the check: a pull_request workflow in
+# the PR itself could rewrite itself to `exit 0`, or add a second job with the
+# same name, and turn a plain required status check green.
+#
+# Only dev, hotfix/* and the release-please branch may merge into main.
+# Dependabot security updates always target the default branch (main); they
+# must go through dev and its review instead. A hotfix/* PR follows the same
+# review route as any PR into main (lesson of INC-00849).
+#
+# No checkout, no secrets, no token permissions: the job only reads the event.
+# Hosted runner on purpose: a job triggered by PR events does not belong on
+# our own (privileged) runners, even without a checkout.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
+
+jobs:
+  pr-bron:
+    # In ci-actions itself this file is only the source, not a gate.
+    if: github.repository != 'evolv2/ci-actions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Head branch is dev, hotfix/* or release-please, from this repository
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::error::A PR into main must come from this repository, not from $HEAD_REPO."
+            exit 1
+          fi
+          case "$HEAD_REF" in
+            dev|hotfix/*|release-please--branches--main)
+              echo "Head branch $HEAD_REF may merge into main." ;;
+            *)
+              echo "::error::$HEAD_REF may not merge into main. Open the PR against dev; main only takes dev, hotfix/* and the release-please branch."
+              exit 1 ;;
+          esac
