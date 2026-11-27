@@ -32,7 +32,11 @@ jobs:
   pr-bron:
     # In ci-actions itself this file is only the source, not a gate.
     if: github.repository != 'evolv2/ci-actions'
-    runs-on: ${{ vars.CI_RUNNER || 'leafcloud' }}
+    # hosted: public repo. A fork PR can edit the `if` above, and this
+    # repository is public, so the job must never reach an own runner here
+    # (security manager 27-11-2026). The copies in zentro and zentro-field
+    # (private) run on `${{ vars.CI_RUNNER || 'leafcloud' }}`.
+    runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Head branch is dev, hotfix/* or release-please, from this repository

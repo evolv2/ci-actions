@@ -54,6 +54,43 @@ shallow checkout it fetches the history it needs.
     allow-dev: ${{ steps.target.outputs.namespace == 'dev' }}
 ```
 
+## runs-on-guard
+
+Fails when a workflow runs on a GitHub-hosted runner without a reason. Every
+evolv2 job runs on our own runners (eva-ci), picked through a repository
+variable: `${{ vars.CI_RUNNER || 'leafcloud' }}`, `CI_BUILD_RUNNER` for image
+builds, `vars.DEPLOY_RUNNER` for jobs that hold a deploy or publish key.
+
+```yaml
+# .github/workflows/runs-on-guard.yml in a private repository
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  runs-on-guard:
+    runs-on: ${{ vars.CI_RUNNER || 'leafcloud' }}
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@<full-commit-sha>
+        with:
+          persist-credentials: false
+      - uses: evolv2/ci-actions/runs-on-guard@<full-commit-sha>
+```
+
+- A hosted label (`ubuntu-*`, `windows-*`, `macos-*`, also as `|| 'ubuntu-latest'`
+  or a matrix entry) needs `# hosted: <reason>` on that line or in the comment
+  block right above. Reasons in use: a macOS/Windows release leg (we have
+  only Linux runners), a public repository, an endpoint that refuses LeafCloud.
+  A comparison such as `vars.CI_RUNNER == 'ubuntu-latest'` is not a label.
+- In a public repository (this one) the reverse holds: an own runner is
+  refused, because anyone can open a PR there.
+- `pull_request_target` with a checkout of the PR head on an own runner is
+  refused.
+
+Why (27-11-2026): the org's Actions budget ran out and every job still on
+GitHub-hosted stopped. This repository runs the guard on itself
+(`.github/workflows/runs-on-guard.yml`).
+
 ## scan-sign
 
 Run right after an image is pushed to ACR (with `az acr login` done):
